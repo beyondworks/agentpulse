@@ -14,10 +14,25 @@ swift run agentpulse-cli
 # 2) 메뉴바 앱 빌드 (.app 번들)
 ./scripts/make_app.sh
 open AgentPulse.app          # 메뉴바 우측에 막대그래프 아이콘 등장
+
+# 3) DMG로 패키징 (드래그-투-Applications 설치)
+./scripts/make_dmg.sh        # AgentPulse.dmg 생성
 ```
 
 로그인 시 자동 실행은 앱 하단 체크박스(또는 `SMAppService`)로 토글한다.
 `.app`을 `/Applications`로 옮긴 뒤 켜면 안정적이다.
+
+### DMG 설치
+
+`AgentPulse.dmg`를 열고 AgentPulse를 Applications로 드래그한다.
+
+> 이 앱은 **ad-hoc 서명(미공증)**이다. **빌드한 본인 맥에선** 경고 없이 실행된다.
+> **다른 맥에서 내려받으면** 첫 실행 때 Gatekeeper 경고가 한 번 뜬다 →
+> 앱을 **우클릭 → 열기**(1회) 하거나:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/AgentPulse.app
+> ```
+> 경고 자체가 없는 배포는 Apple Developer ID + notarization이 필요하다.
 
 ### 디버그 모드
 ```bash

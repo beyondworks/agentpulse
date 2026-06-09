@@ -3,8 +3,9 @@
 .swiftpm/
 Package.resolved
 
-# Packaged app bundle (build artifact)
+# Packaged app bundle / disk image (build artifacts)
 *.app/
+*.dmg
 
 # macOS
 .DS_Store
