@@ -1,0 +1,66 @@
+# AgentPulse
+
+macOS 메뉴바 상주 앱. Claude Code·Codex·Hermes 세 AI 코딩/에이전트 툴이
+**어떤 MCP 서버와 Skill을 얼마나 썼는지** 주간·월간·기간지정 그래프로 보여준다.
+
+순수 Swift (SwiftUI `MenuBarExtra` + Swift Charts). 외부 의존성 없음.
+
+## 빌드 & 실행
+
+```bash
+# 1) 수집기 검증 (헤드리스) — 로그를 파싱해 usage.db를 채우고 30일 리포트 출력
+swift run agentpulse-cli
+
+# 2) 메뉴바 앱 빌드 (.app 번들)
+./scripts/make_app.sh
+open AgentPulse.app          # 메뉴바 우측에 막대그래프 아이콘 등장
+```
+
+로그인 시 자동 실행은 앱 하단 체크박스(또는 `SMAppService`)로 토글한다.
+`.app`을 `/Applications`로 옮긴 뒤 켜면 안정적이다.
+
+### 디버그 모드
+```bash
+.build/debug/AgentPulse --render out.png [mcp|skill|tool]   # SwiftUI 뷰만 PNG로 (차트 확인)
+.build/debug/AgentPulse --snap   out.png [mcp|skill|tool]   # 네이티브 컨트롤 포함 실제 뷰 캡처
+agentpulse-cli --report                                     # 수집 없이 캐시 리포트만
+```
+
+## 구조
+
+```
+Collector(증분 파싱) → usage.db(일별 집계 캐시) → MenuBarExtra UI(Swift Charts)
+```
+
+- **Collector** — 3개 소스를 증분 파싱. JSONL은 (mtime, byte-offset), Hermes DB는 last-rowid로
+  변경분만 읽는다. 첫 풀스캔 ~90초, 이후 재실행 ~0.3초.
+- **usage.db** (`~/Library/Application Support/AgentPulse/usage.db`) — `usage(tool,category,item,day,profile,count)`
+  일별 버킷. 주간/월간/기간 = day 범위 합산. 원본은 읽기 전용으로만 접근.
+- **UI** — 기간(주간·월간·기간지정) × 툴(전체·Claude·Codex·Hermes) × 카테고리(MCP·Skill·Tools)
+  필터 + 추세/Top 차트 + 랭킹 리스트. 앱 시작 + 10분 주기로 백그라운드 증분 수집.
+
+## 데이터 소스 (직접 검증)
+
+| 툴 | 경로 | MCP | Skill | Tools |
+|----|------|-----|-------|-------|
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `mcp__server__tool` | `Skill` tool의 `input.skill` | 내장 도구(Read/Bash…) |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` | `mcp__` 접두 호출만 | — | `function_call`/`custom_tool_call` |
+| Hermes | `~/.hermes/profiles/{persona}/state.db` | — | `skill_view`의 `arguments.name` | `tool_calls[].function.name` |
+
+각 툴은 서로 다른 네임스페이스를 가진다. MCP는 Claude Code·Codex만, Skill은 Claude Code·Hermes만
+의미가 있다(보여줄 데이터가 없으면 0으로 표시).
+
+## 알려진 한계
+
+- **Codex MCP** — Codex가 대부분의 MCP 도구명을 평탄화(prefix 제거)해서 노출하므로, 깔끔한
+  `mcp__server__tool` 형태만 MCP로 귀속한다. 나머지는 Tools에 집계된다.
+- **Hermes 정본** — persona별 `state.db`만 사용한다. 구 `~/.hermes/state.db`(5월 중순까지)와
+  web-ui DB는 부분 데이터라 제외.
+- **UUID MCP 서버** — 커넥터 UUID 서버는 `93138da9…`처럼 축약 표기한다.
+- 시크릿 보호: 도구명·skill명·타임스탬프만 추출하며 메시지 본문/인자값은 저장·표시하지 않는다.
+
+## 정확성 검증
+
+- Claude `playwright` MCP: 캐시 151 = `grep` 원본 151 (정확 일치)
+- Hermes skill: 캐시 2673 = persona DB 원본 재집계 2673 (정확 일치)
+- 증분 재실행 시 중복 집계 없음(2회 실행 후에도 동일 카운트)

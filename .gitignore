@@ -1,0 +1,13 @@
+# SwiftPM build output
+.build/
+.swiftpm/
+Package.resolved
+
+# Packaged app bundle (build artifact)
+*.app/
+
+# macOS
+.DS_Store
+
+# Local verification captures
+*.png
