@@ -70,7 +70,7 @@ public enum TimeUtil {
 public enum Period: Equatable, Sendable {
     case week                 // last 7 days incl. today
     case month                // last 30 days incl. today
-    case custom(Date, Date)   // explicit start...end
+    case all                  // everything on record
 
     public func bounds(now: Date = Date()) -> (start: Date, end: Date) {
         let cal = Calendar.current
@@ -80,8 +80,8 @@ public enum Period: Equatable, Sendable {
             return (cal.date(byAdding: .day, value: -6, to: endDay)!, now)
         case .month:
             return (cal.date(byAdding: .day, value: -29, to: endDay)!, now)
-        case .custom(let s, let e):
-            return (min(s, e), max(s, e))
+        case .all:
+            return (cal.date(from: DateComponents(year: 2000, month: 1, day: 1))!, now)
         }
     }
 

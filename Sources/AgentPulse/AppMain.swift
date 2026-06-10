@@ -68,11 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel(autoCollect: false)
         let env = ProcessInfo.processInfo.environment
         model.periodKind = .month
-        if env["AGENTPULSE_FAKE_PERIOD"] == "custom" {
-            model.periodKind = .custom
-            model.customStart = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-            model.customEnd = Date()
-        }
+        if env["AGENTPULSE_FAKE_PERIOD"] == "all" { model.periodKind = .all }
         if let raw = env["AGENTPULSE_FAKE_TOOL"], let t = ToolKind(rawValue: raw) { model.toolFilter = t }
         if let raw = categoryRaw, let cat = UsageCategory(rawValue: raw) { model.category = cat }
         model.reload()
