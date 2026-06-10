@@ -6,7 +6,7 @@ import AgentPulseCore
 enum PeriodKind: String, CaseIterable, Identifiable {
     case week = "주간"
     case month = "월간"
-    case custom = "기간지정"
+    case all = "전체"
     var id: String { rawValue }
 }
 
@@ -23,8 +23,6 @@ struct RankRow: Identifiable, Hashable {
 final class AppModel: ObservableObject {
     // Controls
     @Published var periodKind: PeriodKind = .week
-    @Published var customStart = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
-    @Published var customEnd = Date()
     @Published var toolFilter: ToolKind? = nil          // nil == all tools
     @Published var category: UsageCategory = .mcp
     @Published var showZero = false
@@ -73,7 +71,7 @@ final class AppModel: ObservableObject {
         Notifier.shared.prepare()
         collect()   // refresh data on launch
         liveTick()
-        refreshPlanUsage()
+        refreshPlanUsage(viaKeychain: true)   // one-time Keychain prompt + live value at launch
 
         // Real-time refresh: watch the source dirs and re-collect on any write.
         watcher = FileWatcher(paths: [home + "/.claude/projects",
@@ -102,10 +100,17 @@ final class AppModel: ObservableObject {
     /// - Otherwise (cache stale/missing, e.g. after a standalone widget restart),
     ///   do our own read-only fetch for a current value. Read-only: never refreshes
     ///   or writes the token, so it can't affect any CLI/desktop login.
-    func refreshPlanUsage() {
+    func refreshPlanUsage(viaKeychain: Bool = false) {
         let cached = LiveUsage.planUsage()
         if let cached, cached.isFresh(maxAgeHours: 5.0 / 60.0) {   // ≤5 min old → OMC is live
             planUsage = cached
+            return
+        }
+        // Cache is stale. Only read the Keychain + call the (rate-limited) endpoint at
+        // explicit moments — app launch and the manual refresh button — so we never
+        // spam the macOS access prompt or the API. The 60s timer just reuses the cache.
+        guard viaKeychain else {
+            planUsage = cached ?? planUsage
             return
         }
         if planUsage == nil { planUsage = cached }                 // show whatever we have now
@@ -158,7 +163,7 @@ final class AppModel: ObservableObject {
         switch periodKind {
         case .week:   return .week
         case .month:  return .month
-        case .custom: return .custom(customStart, customEnd)
+        case .all:    return .all
         }
     }
 

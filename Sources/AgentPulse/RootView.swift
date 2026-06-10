@@ -118,8 +118,6 @@ struct RootView: View {
         .onChange(of: model.category) { _, _ in model.reload() }
         .onChange(of: model.toolFilter) { _, _ in model.reload() }
         .onChange(of: model.showZero) { _, _ in model.reload() }
-        .onChange(of: model.customStart) { _, _ in model.reload() }
-        .onChange(of: model.customEnd) { _, _ in model.reload() }
         .onChange(of: model.ctxThreshold) { _, _ in model.liveTick() }
         .onChange(of: model.window1M) { _, _ in model.liveTick() }
     }
@@ -140,7 +138,7 @@ struct RootView: View {
             Text(model.lastUpdated).font(.caption2).foregroundStyle(.tertiary)
             // Fixed-size refresh control: swaps arrow ⇄ spinner in place (opacity only),
             // so a collection starting/finishing never reflows the header — no window jitter.
-            Button { model.collect() } label: {
+            Button { model.collect(); model.refreshPlanUsage(viaKeychain: true) } label: {
                 ZStack {
                     Image(systemName: "arrow.clockwise").font(.caption)
                         .opacity(model.isCollecting ? 0 : 1)
@@ -286,17 +284,6 @@ struct RootView: View {
                 }.pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
                 legendRow
-            }
-            if model.periodKind == .custom {
-                // Own row so the date fields never squeeze the legend into wrapping.
-                HStack(spacing: 6) {
-                    DatePicker("", selection: $model.customStart, displayedComponents: .date)
-                        .labelsHidden().controlSize(.small).fixedSize()
-                    Text("~").font(.caption).foregroundStyle(.secondary)
-                    DatePicker("", selection: $model.customEnd, displayedComponents: .date)
-                        .labelsHidden().controlSize(.small).fixedSize()
-                    Spacer()
-                }
             }
             HStack(spacing: 8) {
                 DataSegTabs(options:

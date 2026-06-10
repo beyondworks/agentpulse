@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 /// Claude Max subscription usage (5-hour + weekly windows), as cached by the
 /// OMC HUD after it calls `api.anthropic.com/api/oauth/usage`. We only read the
@@ -113,12 +114,39 @@ public enum LiveUsage {
         return parseUsage(json)
     }
 
-    /// Read OAuth creds from both the file and the Keychain; return whichever has
-    /// the later expiry (the one most likely to be valid or refreshable).
+    /// Read OAuth creds from the file and the Keychain; return whichever has the
+    /// later expiry. The in-process Keychain read is tried first — it triggers the
+    /// proper "AgentPulse wants to use Claude Code-credentials" prompt (one-time
+    /// "Always Allow"), unlike the `security` subprocess which doesn't prompt
+    /// reliably from a GUI app.
     private static func readOAuthCreds(home: String) -> OAuthCreds? {
-        [readFileCreds(home: home), readKeychainCreds()]
+        [readFileCreds(home: home), readKeychainInProcess(), readKeychainCreds()]
             .compactMap { $0 }
             .max { ($0.expiresAt ?? 0) < ($1.expiresAt ?? 0) }
+    }
+
+    /// Read the token via the Security framework, in-process. macOS attributes the
+    /// access prompt to AgentPulse itself, so an "Always Allow" grant sticks for
+    /// this app. Read-only — we never write or refresh the token.
+    private static func readKeychainInProcess() -> OAuthCreds? {
+        let service = keychainService()
+        let bases: [[String: Any]] = [
+            [kSecAttrService as String: service, kSecAttrAccount as String: NSUserName()],
+            [kSecAttrService as String: service],
+        ]
+        for base in bases {
+            var q = base
+            q[kSecClass as String] = kSecClassGenericPassword
+            q[kSecReturnData as String] = true
+            q[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(q as CFDictionary, &item)
+            if status == errSecSuccess, let data = item as? Data,
+               let raw = String(data: data, encoding: .utf8), let c = parseCreds(raw) {
+                return c
+            }
+        }
+        return nil
     }
 
     private static func keychainService() -> String {
