@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
     @Published var dayTokens: [String: DayTokens] = [:]   // Claude tokens per day (hover tooltip)
     @Published var totalsByTool: [ToolKind: Int] = [:]
     @Published var grandTotal = 0
+    @Published var categoryHasData: [UsageCategory: Bool] = [:]   // per category, in current period + tool
+    @Published var toolHasData: [ToolKind: Bool] = [:]            // per tool, in current period + category
     @Published var ranking: [RankRow] = []
 
     @Published var launchAtLogin = false
@@ -93,17 +95,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Refresh plan usage + active-session context, and push per-session compaction
-    /// alerts. Cheap (reads a couple of cache files + transcript tails).
-    /// Live plan usage: fetch from the OAuth usage endpoint (read-only, no token
-    /// refresh) and fall back to the OMC cache when no valid token is available.
+    /// Refresh plan usage (hybrid):
+    /// - OMC rewrites its cache every few seconds while a Claude Code session is
+    ///   live. If the cache is very recent, OMC is actively polling — reuse it and
+    ///   do NOT hit the (rate-limited) usage endpoint ourselves.
+    /// - Otherwise (cache stale/missing, e.g. after a standalone widget restart),
+    ///   do our own read-only fetch for a current value. Read-only: never refreshes
+    ///   or writes the token, so it can't affect any CLI/desktop login.
     func refreshPlanUsage() {
-        if planUsage == nil { planUsage = LiveUsage.planUsage() }   // show cache immediately
+        let cached = LiveUsage.planUsage()
+        if let cached, cached.isFresh(maxAgeHours: 5.0 / 60.0) {   // ≤5 min old → OMC is live
+            planUsage = cached
+            return
+        }
+        if planUsage == nil { planUsage = cached }                 // show whatever we have now
         Task.detached(priority: .utility) {
             let live = await LiveUsage.fetchPlanUsage()
             await MainActor.run {
-                if let live { self.planUsage = live }
-                else if self.planUsage == nil { self.planUsage = LiveUsage.planUsage() }
+                self.planUsage = live ?? cached ?? LiveUsage.planUsage()
             }
         }
     }
@@ -161,6 +170,13 @@ final class AppModel: ObservableObject {
         dayTokens = cache.dailyTokens(start: s, end: e)
         totalsByTool = cache.totalsByTool(start: s, end: e, category: category)
         grandTotal = cache.grandTotal(start: s, end: e, category: category, tool: toolFilter)
+        // Data-presence flags so the tabs can show where data actually lives.
+        categoryHasData = Dictionary(uniqueKeysWithValues: UsageCategory.allCases.map {
+            ($0, cache.grandTotal(start: s, end: e, category: $0, tool: toolFilter) > 0)
+        })
+        toolHasData = Dictionary(uniqueKeysWithValues: ToolKind.allCases.map {
+            ($0, (totalsByTool[$0] ?? 0) > 0)
+        })
         lastUpdated = cache.meta("last_collected").map(Self.pretty) ?? "—"
         ranking = buildRanking(start: s, end: e)
     }
