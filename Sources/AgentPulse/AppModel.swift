@@ -82,15 +82,17 @@ final class AppModel: ObservableObject {
         watcher?.start()
 
         // Safety-net polls in case FSEvents misses (and for the plan-usage cache).
-        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.collect() }
+        // Added in `.common` mode so they keep firing while the menu-bar popover is
+        // OPEN — `.scheduledTimer` uses `.default` mode, which menu tracking pauses,
+        // freezing the UI the moment you open it to look at it.
+        func every(_ s: TimeInterval, _ body: @escaping () -> Void) -> Timer {
+            let t = Timer(timeInterval: s, repeats: true) { _ in body() }
+            RunLoop.main.add(t, forMode: .common)
+            return t
         }
-        liveTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.liveTick() }
-        }
-        planTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshPlanUsage() }
-        }
+        timer = every(120) { [weak self] in Task { @MainActor in self?.collect() } }
+        liveTimer = every(25) { [weak self] in Task { @MainActor in self?.liveTick() } }
+        planTimer = every(60) { [weak self] in Task { @MainActor in self?.refreshPlanUsage() } }
     }
 
     /// Refresh plan usage (hybrid):
@@ -103,22 +105,30 @@ final class AppModel: ObservableObject {
     func refreshPlanUsage(viaKeychain: Bool = false) {
         let cached = LiveUsage.planUsage()
         if let cached, cached.isFresh(maxAgeHours: 5.0 / 60.0) {   // ≤5 min old → OMC is live
-            planUsage = cached
+            adoptPlan(cached)
             return
         }
         // Cache is stale. Only read the Keychain + call the (rate-limited) endpoint at
         // explicit moments — app launch and the manual refresh button — so we never
         // spam the macOS access prompt or the API. The 60s timer just reuses the cache.
         guard viaKeychain else {
-            planUsage = cached ?? planUsage
+            adoptPlan(cached)   // adopt only if newer — the timer never reverts a live value
             return
         }
         if planUsage == nil { planUsage = cached }                 // show whatever we have now
         Task.detached(priority: .utility) {
             let live = await LiveUsage.fetchPlanUsage()
-            await MainActor.run {
-                self.planUsage = live ?? cached ?? LiveUsage.planUsage()
-            }
+            await MainActor.run { self.adoptPlan(live ?? cached) }
+        }
+    }
+
+    /// Adopt a plan value only if it is at least as fresh as the current one, so the
+    /// display only ever moves forward in time — never snaps back to an older snapshot
+    /// (the bug that made a fresh live % revert to the stale cache, looking hardcoded).
+    private func adoptPlan(_ candidate: PlanUsage?) {
+        guard let candidate else { return }
+        if candidate.updatedAt >= (planUsage?.updatedAt ?? .distantPast) {
+            planUsage = candidate
         }
     }
 

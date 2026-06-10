@@ -102,6 +102,9 @@ struct RootView: View {
     @State private var hover: TrendHover? = ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_HOVER"] != nil
         ? TrendHover(day: "2026-06-09", tokens: DayTokens(input: 2082326, output: 5236055, cacheRead: 536514081, cacheCreation: 71993660))
         : nil
+    @State private var rankHover: RankRow? = ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_RANKHOVER"] != nil
+        ? RankRow(tool: .claudeCode, item: "playwright", count: 151, lastUsed: "2026-06-09")
+        : nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -114,6 +117,7 @@ struct RootView: View {
             footer
         }
         .padding(10)
+        .onAppear { model.collect(); model.liveTick() }   // always refresh when the popover opens
         .onChange(of: model.periodKind) { _, _ in model.reload() }
         .onChange(of: model.category) { _, _ in model.reload() }
         .onChange(of: model.toolFilter) { _, _ in model.reload() }
@@ -423,10 +427,11 @@ struct RootView: View {
 
     private var rankedList: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text("많이 쓴 항목 · 랭킹").font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Toggle("미사용(0회) 포함", isOn: $model.showZero).toggleStyle(.checkbox).font(.caption2)
+            HStack(spacing: 6) {
+                Text("많이 쓴 항목 · 랭킹").font(.caption2).foregroundStyle(.secondary).fixedSize()
+                if let r = rankHover { rankHoverLabel(r) }
+                Spacer(minLength: 6)
+                Toggle("미사용(0회) 포함", isOn: $model.showZero).toggleStyle(.checkbox).font(.caption2).fixedSize()
             }
             ScrollView {
                 VStack(spacing: 0) {
@@ -464,6 +469,24 @@ struct RootView: View {
                 .foregroundStyle(row.count == 0 ? .secondary : .primary)
         }
         .padding(.vertical, 3)
+        .background(rankHover?.id == row.id ? Color.primary.opacity(0.06) : .clear)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { rankHover = row }
+            else if rankHover?.id == row.id { rankHover = nil }
+        }
+    }
+
+    /// Inline detail shown beside the ranking header while hovering a bar. Per-item
+    /// token usage isn't in the data (tokens are per-day, not per-tool), so this
+    /// surfaces the next-best detail: full name, tool, count, share, last use.
+    @ViewBuilder private func rankHoverLabel(_ r: RankRow) -> some View {
+        let share = model.grandTotal > 0 ? Double(r.count) / Double(model.grandTotal) * 100 : 0
+        (Text(displayItem(r) + " · ").foregroundStyle(.primary)
+         + Text(r.tool.display).foregroundStyle(.secondary)
+         + Text("  \(r.count.formatted())회 · \(String(format: "%.1f", share))%").foregroundStyle(.secondary)
+         + Text(r.lastUsed.map { " · \($0)" } ?? "").foregroundStyle(.tertiary))
+            .font(.caption2).lineLimit(1)
     }
 
     // MARK: Footer
