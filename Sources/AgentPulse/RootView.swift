@@ -97,10 +97,19 @@ struct RootView: View {
             Text("· \(model.category.display) \(model.grandTotal.formatted())회")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            if model.isCollecting { ProgressView().controlSize(.small) }
             Text(model.lastUpdated).font(.caption2).foregroundStyle(.tertiary)
-            Button { model.collect() } label: { Image(systemName: "arrow.clockwise").font(.caption) }
-                .buttonStyle(.borderless).disabled(model.isCollecting)
+            // Fixed-size refresh control: swaps arrow ⇄ spinner in place (opacity only),
+            // so a collection starting/finishing never reflows the header — no window jitter.
+            Button { model.collect() } label: {
+                ZStack {
+                    Image(systemName: "arrow.clockwise").font(.caption)
+                        .opacity(model.isCollecting ? 0 : 1)
+                    ProgressView().controlSize(.small).scaleEffect(0.6)
+                        .opacity(model.isCollecting ? 1 : 0)
+                }
+                .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless).disabled(model.isCollecting)
         }
     }
 
