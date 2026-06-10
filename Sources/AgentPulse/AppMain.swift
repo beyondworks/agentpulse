@@ -11,15 +11,30 @@ enum AppAssets {
         return NSImage(contentsOfFile: path)
     }()
 
-    /// A copy redrawn at the menu-bar status-item size (keeps full color — not a template).
-    static func menuBarIcon(_ pt: CGFloat = 18) -> NSImage? {
-        guard let base = icon else { return nil }
+    /// Draw the three ascending bars (no plate) using the current fill colour,
+    /// matching the app-icon proportions. Shared by the menu-bar glyph and the
+    /// debug renderer.
+    static func drawBars(size pt: CGFloat) {
+        let u = pt / 18.0                          // 18-unit design box
+        let barW = 3.0 * u, gap = 2.0 * u
+        let heights: [CGFloat] = [6.5 * u, 9.2 * u, 13.0 * u]   // short → tall
+        let totalW = barW * 3 + gap * 2
+        let x0 = (pt - totalW) / 2, baseY = 2.5 * u
+        for (i, h) in heights.enumerated() {
+            let r = NSRect(x: x0 + CGFloat(i) * (barW + gap), y: baseY, width: barW, height: h)
+            NSBezierPath(roundedRect: r, xRadius: 0.7 * u, yRadius: 0.7 * u).fill()
+        }
+    }
+
+    /// Menu-bar status-item glyph: bars only, no background, as a TEMPLATE image so
+    /// macOS tints it to match other menu-bar icons (white on the dark menu bar).
+    static func menuBarGlyph(_ pt: CGFloat = 18) -> NSImage {
         let img = NSImage(size: NSSize(width: pt, height: pt))
         img.lockFocus()
-        base.draw(in: NSRect(x: 0, y: 0, width: pt, height: pt),
-                  from: .zero, operation: .sourceOver, fraction: 1)
+        NSColor.black.setFill()
+        drawBars(size: pt)
         img.unlockFocus()
-        img.isTemplate = false
+        img.isTemplate = true
         return img
     }
 }
@@ -34,11 +49,7 @@ struct AgentPulseApp: App {
             RootView(model: model)
                 .frame(width: 640, height: 500)
         } label: {
-            if let icon = AppAssets.menuBarIcon() {
-                Image(nsImage: icon)
-            } else {
-                Image(systemName: "chart.bar.xaxis")
-            }
+            Image(nsImage: AppAssets.menuBarGlyph())
         }
         .menuBarExtraStyle(.window)
     }
@@ -60,7 +71,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             snap(to: args[idx + 1], categoryRaw: idx + 2 < args.count ? args[idx + 2] : nil)
             return
         }
+        // Render the menu-bar glyph as it appears in the bar (white on dark) for review.
+        if let idx = args.firstIndex(of: "--glyph"), idx + 1 < args.count {
+            renderGlyph(to: args[idx + 1]); return
+        }
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func renderGlyph(to path: String) {
+        let S: CGFloat = 176
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        NSColor(white: 0.13, alpha: 1).setFill()                       // dark menu-bar-like bg
+        NSRect(x: 0, y: 0, width: S, height: S).fill()
+        NSColor.white.setFill()
+        AppAssets.drawBars(size: S)                                    // bars as they'll be tinted
+        img.unlockFocus()
+        if let tiff = img.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
+           let png = bmp.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+        exit(0)
     }
 
     @MainActor
