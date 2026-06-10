@@ -2,6 +2,28 @@ import SwiftUI
 import AppKit
 import AgentPulseCore
 
+/// The app icon (bars-on-squircle), loaded once from the bundled AppIcon.icns.
+/// Nil in unpackaged dev runs (raw `.build/...` binary) — callers fall back to
+/// an SF Symbol so the UI still renders during development/snapshots.
+enum AppAssets {
+    static let icon: NSImage? = {
+        guard let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns") else { return nil }
+        return NSImage(contentsOfFile: path)
+    }()
+
+    /// A copy redrawn at the menu-bar status-item size (keeps full color — not a template).
+    static func menuBarIcon(_ pt: CGFloat = 18) -> NSImage? {
+        guard let base = icon else { return nil }
+        let img = NSImage(size: NSSize(width: pt, height: pt))
+        img.lockFocus()
+        base.draw(in: NSRect(x: 0, y: 0, width: pt, height: pt),
+                  from: .zero, operation: .sourceOver, fraction: 1)
+        img.unlockFocus()
+        img.isTemplate = false
+        return img
+    }
+}
+
 @main
 struct AgentPulseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -12,7 +34,11 @@ struct AgentPulseApp: App {
             RootView(model: model)
                 .frame(width: 640, height: 500)
         } label: {
-            Image(systemName: "chart.bar.xaxis")
+            if let icon = AppAssets.menuBarIcon() {
+                Image(nsImage: icon)
+            } else {
+                Image(systemName: "chart.bar.xaxis")
+            }
         }
         .menuBarExtraStyle(.window)
     }

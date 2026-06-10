@@ -17,14 +17,26 @@ APP="$ROOT/AgentPulse.app"
 DMG="$ROOT/AgentPulse.dmg"
 VOL="AgentPulse"
 
-# 2) Stage app + /Applications symlink for drag-install
+# 2) Stage app + /Applications symlink + volume icon for drag-install
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
+cp "$ROOT/AppIcon.icns" "$STAGING/.VolumeIcon.icns"   # bars icon as the mounted-volume icon
 
-# 3) Build a compressed DMG
+# 3) Build a read-write image, flag the volume as having a custom icon, then
+#    convert to a compressed read-only DMG (the flag carries through the convert).
 rm -f "$DMG"
-hdiutil create -volname "$VOL" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
+hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1 || true   # clear a stale mount, if any
+RWDMG="$(mktemp -u).dmg"
+hdiutil create -volname "$VOL" -srcfolder "$STAGING" -ov -format UDRW "$RWDMG" >/dev/null
+MOUNT="$(hdiutil attach "$RWDMG" -nobrowse -noverify -noautoopen | grep -o '/Volumes/.*' | head -1)"
+if [ -n "$MOUNT" ]; then
+    /usr/bin/SetFile -a C "$MOUNT" 2>/dev/null \
+        || echo "  (SetFile unavailable — volume icon flag not set; DMG still builds)" >&2
+    hdiutil detach "$MOUNT" >/dev/null
+fi
+hdiutil convert "$RWDMG" -format UDZO -o "$DMG" >/dev/null
+rm -f "$RWDMG"
 
 echo "Built $DMG"

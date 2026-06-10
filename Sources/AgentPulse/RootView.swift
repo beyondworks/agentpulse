@@ -92,7 +92,11 @@ struct RootView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: "chart.bar.xaxis").foregroundStyle(.tint).font(.subheadline)
+            if let icon = AppAssets.icon {
+                Image(nsImage: icon).resizable().frame(width: 17, height: 17)
+            } else {
+                Image(systemName: "chart.bar.xaxis").foregroundStyle(.tint).font(.subheadline)
+            }
             Text("AgentPulse").font(.subheadline.weight(.semibold))
             Text("· \(model.category.display) \(model.grandTotal.formatted())회")
                 .font(.caption).foregroundStyle(.secondary)
