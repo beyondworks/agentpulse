@@ -66,7 +66,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func makeModel(_ categoryRaw: String?) -> AppModel {
         let model = AppModel(autoCollect: false)
+        let env = ProcessInfo.processInfo.environment
         model.periodKind = .month
+        if env["AGENTPULSE_FAKE_PERIOD"] == "custom" {
+            model.periodKind = .custom
+            model.customStart = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+            model.customEnd = Date()
+        }
+        if let raw = env["AGENTPULSE_FAKE_TOOL"], let t = ToolKind(rawValue: raw) { model.toolFilter = t }
         if let raw = categoryRaw, let cat = UsageCategory(rawValue: raw) { model.category = cat }
         model.reload()
         model.liveEnabled = false   // populate live data for the snapshot without firing alerts

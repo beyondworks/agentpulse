@@ -32,6 +32,42 @@ private struct SlimScrollers: NSViewRepresentable {
 private let toolColorDomain = ["Claude Code", "Codex", "Hermes"]
 private let toolColorRange: [Color] = [.orange, .blue, .purple]
 
+/// A compact segmented control whose options dim when they hold no data in the
+/// current view — so you can see at a glance which tabs are worth clicking
+/// (e.g. Codex/Hermes are dimmed under the MCP category but lit under Tools).
+private struct DataSegTabs<T: Hashable>: View {
+    let options: [(value: T, label: String, hasData: Bool)]
+    @Binding var selection: T
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(options, id: \.value) { opt in
+                let selected = opt.value == selection
+                Button { selection = opt.value } label: {
+                    Text(opt.label)
+                        .font(.caption)
+                        .foregroundStyle(selected ? AnyShapeStyle(.primary)
+                                         : AnyShapeStyle(opt.hasData ? Color.secondary : Color.secondary.opacity(0.3)))
+                        .padding(.horizontal, 9).padding(.vertical, 3)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                                    .shadow(color: .black.opacity(0.15), radius: 0.5, y: 0.5)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(opt.hasData ? "" : "이 기간엔 \(opt.label) 데이터 없음")
+            }
+        }
+        .padding(2)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 7))
+        .fixedSize()
+    }
+}
+
 /// Minimal flow layout: lays subviews left-to-right, wrapping to the next line
 /// when they run out of width (used for the active-session pills).
 private struct FlowLayout: Layout {
@@ -183,8 +219,12 @@ struct RootView: View {
                 planCapsule("5h", pu.fiveHourPercent)
                 planCapsule("주간", pu.weeklyPercent)
                 planCapsule("Son", pu.sonnetWeeklyPercent)
+                if let age = planAgeLabel(pu.updatedAt) {
+                    Text(age).font(.caption2).foregroundStyle(.tertiary)   // stale-value transparency
+                }
             }
             .fixedSize()
+            .help("플랜 잔량 마지막 갱신: \(planAgeFull(pu.updatedAt)) (OMC 캐시 · CC 상태줄과 동일 소스)")
         } else if model.planUsage?.errorReason == "auth" {
             // OMC tried today but the OAuth token is expired/invalid — re-login fixes it.
             Text("재로그인 필요").font(.caption2.weight(.medium)).foregroundStyle(.orange)
@@ -194,6 +234,21 @@ struct RootView: View {
             Text("데스크톱앱에서 확인").font(.caption2).foregroundStyle(.tertiary)
                 .help("Claude 데스크톱앱 구독의 잔량은 보안상 외부 앱이 읽을 수 없습니다. CLI(claude /login)로 로그인된 세션이 있으면 실시간 표시됩니다.")
         }
+    }
+
+    /// Short "· N분 전" suffix shown only when the plan value is no longer essentially
+    /// live (≥5 min old), so a lagging cache doesn't look like a wrong "real-time" value.
+    private func planAgeLabel(_ d: Date) -> String? {
+        let mins = Int(Date().timeIntervalSince(d) / 60)
+        guard mins >= 5 else { return nil }
+        return mins < 60 ? "· \(mins)분 전" : "· \(mins / 60)시간 전"
+    }
+
+    private func planAgeFull(_ d: Date) -> String {
+        let mins = Int(Date().timeIntervalSince(d) / 60)
+        if mins < 1 { return "방금" }
+        if mins < 60 { return "\(mins)분 전" }
+        return "\(mins / 60)시간 \(mins % 60)분 전"
     }
 
     @ViewBuilder private func planCapsule(_ label: String, _ pct: Int?) -> some View {
@@ -229,25 +284,29 @@ struct RootView: View {
                 Picker("", selection: $model.periodKind) {
                     ForEach(PeriodKind.allCases) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented).labelsHidden().fixedSize()
-                if model.periodKind == .custom {
-                    DatePicker("", selection: $model.customStart, displayedComponents: .date)
-                        .labelsHidden().controlSize(.small)
-                    Text("~").font(.caption).foregroundStyle(.secondary)
-                    DatePicker("", selection: $model.customEnd, displayedComponents: .date)
-                        .labelsHidden().controlSize(.small)
-                }
                 Spacer()
                 legendRow
             }
+            if model.periodKind == .custom {
+                // Own row so the date fields never squeeze the legend into wrapping.
+                HStack(spacing: 6) {
+                    DatePicker("", selection: $model.customStart, displayedComponents: .date)
+                        .labelsHidden().controlSize(.small).fixedSize()
+                    Text("~").font(.caption).foregroundStyle(.secondary)
+                    DatePicker("", selection: $model.customEnd, displayedComponents: .date)
+                        .labelsHidden().controlSize(.small).fixedSize()
+                    Spacer()
+                }
+            }
             HStack(spacing: 8) {
-                Picker("", selection: $model.toolFilter) {
-                    Text("전체").tag(ToolKind?.none)
-                    ForEach(ToolKind.allCases, id: \.self) { Text($0.display).tag(ToolKind?.some($0)) }
-                }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                DataSegTabs(options:
+                    [(ToolKind?.none, "전체", model.toolHasData.values.contains(true))]
+                    + ToolKind.allCases.map { (ToolKind?.some($0), $0.display, model.toolHasData[$0] ?? false) },
+                    selection: $model.toolFilter)
                 Spacer()
-                Picker("", selection: $model.category) {
-                    ForEach(UsageCategory.allCases, id: \.self) { Text($0.display).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                DataSegTabs(options:
+                    UsageCategory.allCases.map { ($0, $0.display, model.categoryHasData[$0] ?? false) },
+                    selection: $model.category)
             }
         }
     }
@@ -258,10 +317,11 @@ struct RootView: View {
                 let n = model.totalsByTool[tool] ?? 0
                 HStack(spacing: 3) {
                     Circle().fill(color(for: tool.display)).frame(width: 6, height: 6)
-                    Text("\(tool.display) \(n.formatted())").font(.caption2)
+                    Text("\(tool.display) \(n.formatted())").font(.caption2).lineLimit(1)
                 }.opacity(n == 0 ? 0.5 : 1)
             }
         }
+        .fixedSize()   // never wrap/compress the legend into two lines
     }
 
     // MARK: Trend (sole chart)
@@ -348,7 +408,26 @@ struct RootView: View {
 
     private var emptyBox: some View {
         RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4))
-            .overlay(Text("데이터 없음").font(.caption2).foregroundStyle(.secondary))
+            .overlay(
+                VStack(spacing: 4) {
+                    Text("데이터 없음").font(.caption2).foregroundStyle(.secondary)
+                    if let hint = emptyHint {
+                        Text(hint).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            )
+    }
+
+    /// When the current tool+category view is empty but the selected tool has data
+    /// under other categories, point there (e.g. "Codex는 Tools 탭에 있어요").
+    private var emptyHint: String? {
+        let others = UsageCategory.allCases.filter {
+            $0 != model.category && (model.categoryHasData[$0] ?? false)
+        }
+        guard !others.isEmpty else { return nil }
+        let tabs = others.map { $0.display }.joined(separator: "·")
+        let who = model.toolFilter?.display ?? "데이터"
+        return "\(who)는 \(tabs) 탭에 있어요"
     }
 
     // MARK: Ranked bar list (merged "top items" + ranking)
@@ -394,7 +473,7 @@ struct RootView: View {
                 Color.clear.frame(width: 70, height: 1)
             }
             Text(row.count.formatted()).font(.callout.monospacedDigit().weight(.medium))
-                .frame(width: 42, alignment: .trailing)
+                .lineLimit(1).frame(width: 58, alignment: .trailing)
                 .foregroundStyle(row.count == 0 ? .secondary : .primary)
         }
         .padding(.vertical, 3)
