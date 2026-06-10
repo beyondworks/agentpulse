@@ -107,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.liveTick()
         model.planUsage = LiveUsage.planUsage()   // cache only — no network/Keychain in snapshots
         if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_COLLECTING"] != nil { model.isCollecting = true }
+        if env["AGENTPULSE_FAKE_PLANDIAG"] != nil { model.planDiagnosis = "token-expired (snapshot)" }
         if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_SESSIONS"] != nil {
             let d = Date(timeIntervalSince1970: 0)
             model.liveSessions = [
@@ -116,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SessionCtx(sessionId: "fake04dddd", project: "linkbrain", model: "claude-sonnet-4-6", ctxTokens: 62_000, windowSize: 200_000, mtime: d),
                 SessionCtx(sessionId: "fake05eeee", project: "auto-video", model: "claude-opus-4-8", ctxTokens: 910_000, windowSize: 1_000_000, mtime: d),
                 SessionCtx(sessionId: "fake06ffff", project: "leanax", model: "claude-sonnet-4-6", ctxTokens: 24_000, windowSize: 200_000, mtime: d),
+                SessionCtx(tool: .codex, sessionId: "fake07codex", project: "product-design", model: "codex", ctxTokens: 0, windowSize: 0, mtime: Date()),
+                SessionCtx(tool: .hermes, sessionId: "fake08hermes", project: "hyojung", model: "hermes", ctxTokens: 0, windowSize: 0, mtime: Date()),
             ]
         }
         return model

@@ -117,7 +117,7 @@ struct RootView: View {
             footer
         }
         .padding(10)
-        .onAppear { model.collect(); model.liveTick() }   // always refresh when the popover opens
+        .onAppear { if model.autoRefresh { model.collect(); model.liveTick() } }   // refresh on open (not in snapshots)
         .onChange(of: model.periodKind) { _, _ in model.reload() }
         .onChange(of: model.category) { _, _ in model.reload() }
         .onChange(of: model.toolFilter) { _, _ in model.reload() }
@@ -188,14 +188,24 @@ struct RootView: View {
     }
 
     private func sessionPill(_ s: SessionCtx) -> some View {
-        let col = ctxColor(s.usedPercent)
+        // Claude pills carry a context ring + %; Codex/Hermes are presence pills
+        // (their logs expose no context data) with the tool's legend color.
+        let col = s.hasContext ? ctxColor(s.usedPercent) : color(for: s.tool.display)
         return HStack(spacing: 5) {
-            miniRing(s.usedPercent, col)
-            Text("\(s.project) \(Int(s.usedPercent))%").font(.caption2)
+            if s.hasContext {
+                miniRing(s.usedPercent, col)
+                Text("\(s.project) \(Int(s.usedPercent))%").font(.caption2)
+            } else {
+                Circle().fill(col).frame(width: 7, height: 7)
+                Text(s.project).font(.caption2)
+            }
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(col.opacity(0.14), in: Capsule())
-        .help("\(s.model) · \(s.ctxTokens.formatted())/\(s.windowSize.formatted()) tokens · \(s.shortId)")
+        .opacity(s.isIdle ? 0.45 : 1)   // open-but-resting sessions dim instead of vanishing
+        .help(s.hasContext
+              ? "\(s.model) · \(s.ctxTokens.formatted())/\(s.windowSize.formatted()) tokens · \(s.shortId)\(s.isIdle ? " · 유휴" : "")"
+              : "\(s.tool.display) 세션 활동 \(Int(Date().timeIntervalSince(s.mtime) / 60))분 전 (컨텍스트 데이터 미제공)")
     }
 
     private func miniRing(_ pct: Double, _ col: Color) -> some View {
@@ -215,8 +225,10 @@ struct RootView: View {
     }
 
     @ViewBuilder private var planUsageView: some View {
-        if let pu = model.planUsage, pu.isFresh() {
-            // OMC fetched real numbers recently — show them live.
+        if let pu = model.planUsage, pu.fiveHourPercent != nil || pu.weeklyPercent != nil {
+            // Known numbers: live when fresh; kept visible (dimmed) with their age and
+            // the REASON they're frozen when not — never a silently stuck value.
+            let expired = model.planDiagnosis.hasPrefix("token-expired")
             HStack(spacing: 5) {
                 planCapsule("5h", pu.fiveHourPercent)
                 planCapsule("주간", pu.weeklyPercent)
@@ -224,18 +236,38 @@ struct RootView: View {
                 if let age = planAgeLabel(pu.updatedAt) {
                     Text(age).font(.caption2).foregroundStyle(.tertiary)   // stale-value transparency
                 }
+                if expired { reloginButton }
             }
             .fixedSize()
-            .help("플랜 잔량 마지막 갱신: \(planAgeFull(pu.updatedAt)) (OMC 캐시 · CC 상태줄과 동일 소스)")
-        } else if model.planUsage?.errorReason == "auth" {
-            // OMC tried today but the OAuth token is expired/invalid — re-login fixes it.
-            Text("재로그인 필요").font(.caption2.weight(.medium)).foregroundStyle(.orange)
-                .help("잔량 조회용 OAuth 토큰이 만료됐습니다. 터미널에서 `claude /login`으로 재인증하면 OMC가 잔량을 다시 받아오고 여기에 자동 표시됩니다.")
+            .opacity(pu.isFresh() ? 1 : 0.6)
+            .help(expired
+                  ? "잔량 조회 토큰이 만료됐습니다(약 8시간 수명). 터미널에서 `claude /login` 후 위젯 새로고침(↻)을 누르면 다시 라이브로 갱신됩니다. 표시 중인 값은 마지막 성공값입니다."
+                  : "플랜 잔량 마지막 갱신: \(planAgeFull(pu.updatedAt)) (라이브 또는 OMC 캐시 · CC 상태줄과 동일 소스)")
+        } else if model.planUsage?.errorReason == "auth" || model.planDiagnosis.hasPrefix("token-expired") {
+            // The OAuth token is expired/invalid — one click opens the re-login.
+            reloginButton
         } else {
             // No usable credentials (desktop-app-only session, or OMC absent).
             Text("데스크톱앱에서 확인").font(.caption2).foregroundStyle(.tertiary)
                 .help("Claude 데스크톱앱 구독의 잔량은 보안상 외부 앱이 읽을 수 없습니다. CLI(claude /login)로 로그인된 세션이 있으면 실시간 표시됩니다.")
         }
+    }
+
+    /// Opens Terminal running `claude /login` — the only safe way to renew the
+    /// (8-hour) token. The widget never touches credentials itself; once the login
+    /// completes, the next refresh picks the new token up automatically.
+    private var reloginButton: some View {
+        Button {
+            let script = "tell application \"Terminal\"\nactivate\ndo script \"claude /login\"\nend tell"
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", script]
+            try? p.run()
+        } label: {
+            Text("재로그인 필요 ↗").font(.caption2.weight(.medium)).foregroundStyle(.orange)
+        }
+        .buttonStyle(.plain)
+        .help("잔량 조회 토큰이 만료됐습니다(약 8시간 수명). 클릭하면 터미널에서 `claude /login`이 열립니다. 로그인 완료 후 위젯을 다시 열면 자동으로 라이브 갱신됩니다.")
     }
 
     /// Short "· N분 전" suffix shown only when the plan value is no longer essentially
