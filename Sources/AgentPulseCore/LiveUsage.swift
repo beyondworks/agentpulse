@@ -38,9 +38,12 @@ public struct PlanUsage: Sendable {
     }
 }
 
-/// Live context-window occupancy for one active Claude Code session.
+/// Live state of one active session. Claude sessions carry context-window
+/// occupancy; Codex/Hermes sessions are presence-only (their logs have no usable
+/// per-session token data), signalled by windowSize == 0.
 public struct SessionCtx: Sendable, Identifiable {
     public var id: String { sessionId }
+    public let tool: ToolKind
     public let sessionId: String
     public let project: String
     public let model: String
@@ -49,10 +52,14 @@ public struct SessionCtx: Sendable, Identifiable {
     public let mtime: Date
 
     public var usedPercent: Double { windowSize > 0 ? Double(ctxTokens) / Double(windowSize) * 100 : 0 }
+    public var hasContext: Bool { windowSize > 0 }
+    /// No writes for a while — session is open but resting (shown dimmed, not dropped).
+    public var isIdle: Bool { Date().timeIntervalSince(mtime) > 3 * 60 }
     public var shortId: String { String(sessionId.prefix(6)) }
 
-    public init(sessionId: String, project: String, model: String, ctxTokens: Int, windowSize: Int, mtime: Date) {
-        self.sessionId = sessionId; self.project = project; self.model = model
+    public init(tool: ToolKind = .claudeCode, sessionId: String, project: String, model: String,
+                ctxTokens: Int, windowSize: Int, mtime: Date) {
+        self.tool = tool; self.sessionId = sessionId; self.project = project; self.model = model
         self.ctxTokens = ctxTokens; self.windowSize = windowSize; self.mtime = mtime
     }
 }
@@ -108,10 +115,30 @@ public enum LiveUsage {
     /// (no refresh, no write-back), so this can never rotate the token or affect any
     /// login (CLI or desktop). The token value is never logged. Returns nil when no
     /// valid token exists (e.g. desktop-app-only users) — the UI then shows a hint.
+    /// Why the last fetchPlanUsage returned nil — for the CLI/UI to explain the
+    /// failure honestly instead of a silent blank ("token-expired", "http-429", …).
+    public private(set) nonisolated(unsafe) static var lastFetchDiagnosis = ""
+
     public static func fetchPlanUsage(home: String = NSHomeDirectory()) async -> PlanUsage? {
-        guard let creds = readOAuthCreds(home: home), !creds.isExpired else { return nil }
-        guard let json = await requestUsage(token: creds.accessToken) else { return nil }
-        return parseUsage(json)
+        guard let creds = readOAuthCreds(home: home) else {
+            lastFetchDiagnosis = "no-credentials (keychain status \(lastKeychainStatus))"
+            return nil
+        }
+        if creds.isExpired {
+            let exp = creds.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000).description } ?? "?"
+            lastFetchDiagnosis = "token-expired (expiresAt \(exp))"
+            return nil
+        }
+        guard let json = await requestUsage(token: creds.accessToken) else {
+            lastFetchDiagnosis = "http-\(lastHTTPStatus)"
+            return nil
+        }
+        guard let pu = parseUsage(json) else {
+            lastFetchDiagnosis = "no-usage-fields (API-key auth or empty response)"
+            return nil
+        }
+        lastFetchDiagnosis = "ok"
+        return pu
     }
 
     /// Read OAuth creds from the file and the Keychain; return whichever has the
@@ -124,6 +151,10 @@ public enum LiveUsage {
             .compactMap { $0 }
             .max { ($0.expiresAt ?? 0) < ($1.expiresAt ?? 0) }
     }
+
+    /// Last OSStatus from the in-process Keychain read — surfaced so the UI/CLI can
+    /// say WHY live fetch is unavailable (-25293 auth denied, -25300 not found, …).
+    public private(set) nonisolated(unsafe) static var lastKeychainStatus: Int32 = 0
 
     /// Read the token via the Security framework, in-process. macOS attributes the
     /// access prompt to AgentPulse itself, so an "Always Allow" grant sticks for
@@ -141,6 +172,7 @@ public enum LiveUsage {
             q[kSecMatchLimit as String] = kSecMatchLimitOne
             var item: CFTypeRef?
             let status = SecItemCopyMatching(q as CFDictionary, &item)
+            lastKeychainStatus = status
             if status == errSecSuccess, let data = item as? Data,
                let raw = String(data: data, encoding: .utf8), let c = parseCreds(raw) {
                 return c
@@ -199,6 +231,8 @@ public enum LiveUsage {
                           refreshToken: c["refreshToken"] as? String)
     }
 
+    public private(set) nonisolated(unsafe) static var lastHTTPStatus = 0
+
     private static func requestUsage(token: String) async -> [String: Any]? {
         guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
         var req = URLRequest(url: url)
@@ -207,8 +241,12 @@ public enum LiveUsage {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
+            lastHTTPStatus = -1   // network error
+            return nil
+        }
+        lastHTTPStatus = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard lastHTTPStatus == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
     }
@@ -231,33 +269,83 @@ public enum LiveUsage {
 
     // MARK: - Active session context
 
-    /// Enumerate Claude Code sessions whose transcript was written within `withinMinutes`.
-    /// Context tokens come from the transcript (always live); window size from the
-    /// session's statusLine cache when present, else inferred.
+    /// Enumerate active sessions across all three tools, newest activity first.
+    /// - Claude: transcript written within the window; context % from the transcript
+    ///   tail (always live), window size from the statusLine cache / inferred.
+    /// - Codex: rollout file written within the window; project from session_meta cwd.
+    ///   Presence-only (rollouts carry no usable context-token data).
+    /// - Hermes: persona state.db written within the window; presence-only.
+    /// The window is deliberately generous (15 min) — a session that pauses while you
+    /// read/think is still "open"; the UI dims idle ones instead of dropping them.
     public static func activeSessions(home: String = NSHomeDirectory(),
-                                      withinMinutes: Double = 3,
+                                      withinMinutes: Double = 15,
                                       defaultWindow: Int = 1_000_000) -> [SessionCtx] {
-        let root = home + "/.claude/projects"
-        guard let en = FileManager.default.enumerator(atPath: root) else { return [] }
-        let cutoff = Date().addingTimeInterval(-withinMinutes * 60)
         var out: [SessionCtx] = []
-        for case let rel as String in en {
-            guard rel.hasSuffix(".jsonl"), !rel.contains("/subagents/") else { continue }
-            let path = root + "/" + rel
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                  let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff else { continue }
-            guard let tail = tailReadLastUsage(path: path) else { continue }
-            let sessionId = (rel as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-            let window = windowSize(home: home, sessionId: sessionId,
-                                    model: tail.model, ctxTokens: tail.ctxTokens, fallback: defaultWindow)
-            out.append(SessionCtx(sessionId: sessionId,
-                                  project: projectLabel(tail.cwd),
-                                  model: tail.model,
-                                  ctxTokens: tail.ctxTokens,
-                                  windowSize: window,
-                                  mtime: mtime))
+        let cutoff = Date().addingTimeInterval(-withinMinutes * 60)
+
+        // Claude Code — transcripts with context occupancy.
+        if let en = FileManager.default.enumerator(atPath: home + "/.claude/projects") {
+            let root = home + "/.claude/projects"
+            for case let rel as String in en {
+                guard rel.hasSuffix(".jsonl"), !rel.contains("/subagents/") else { continue }
+                let path = root + "/" + rel
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                      let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff else { continue }
+                guard let tail = tailReadLastUsage(path: path) else { continue }
+                let sessionId = (rel as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+                let window = windowSize(home: home, sessionId: sessionId,
+                                        model: tail.model, ctxTokens: tail.ctxTokens, fallback: defaultWindow)
+                out.append(SessionCtx(tool: .claudeCode, sessionId: sessionId,
+                                      project: projectLabel(tail.cwd), model: tail.model,
+                                      ctxTokens: tail.ctxTokens, windowSize: window, mtime: mtime))
+            }
         }
-        return out.sorted { $0.usedPercent > $1.usedPercent }
+
+        // Codex — recent rollout files (presence + project label).
+        if let en = FileManager.default.enumerator(atPath: home + "/.codex/sessions") {
+            let root = home + "/.codex/sessions"
+            for case let rel as String in en {
+                guard rel.hasSuffix(".jsonl"), (rel as NSString).lastPathComponent.hasPrefix("rollout-") else { continue }
+                let path = root + "/" + rel
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                      let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff else { continue }
+                let name = (rel as NSString).lastPathComponent
+                out.append(SessionCtx(tool: .codex, sessionId: name,
+                                      project: codexProjectLabel(path: path), model: "codex",
+                                      ctxTokens: 0, windowSize: 0, mtime: mtime))
+            }
+        }
+
+        // Hermes — persona DBs touched recently (presence; persona as the label).
+        let profiles = home + "/.hermes/profiles"
+        if let personas = try? FileManager.default.contentsOfDirectory(atPath: profiles) {
+            for persona in personas where !persona.hasPrefix(".") {
+                let db = profiles + "/" + persona + "/state.db"
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: db),
+                      let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff else { continue }
+                out.append(SessionCtx(tool: .hermes, sessionId: "hermes-" + persona,
+                                      project: persona, model: "hermes",
+                                      ctxTokens: 0, windowSize: 0, mtime: mtime))
+            }
+        }
+
+        // Context-bearing (Claude) first by occupancy, then presence pills by recency.
+        return out.sorted {
+            if $0.hasContext != $1.hasContext { return $0.hasContext }
+            return $0.hasContext ? $0.usedPercent > $1.usedPercent : $0.mtime > $1.mtime
+        }
+    }
+
+    /// Project label for a Codex rollout: session_meta (first line) carries `cwd`.
+    private static func codexProjectLabel(path: String) -> String {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return "codex" }
+        defer { try? fh.close() }
+        let head = fh.readData(ofLength: 16 * 1024)
+        guard let nl = head.firstIndex(of: 0x0A),
+              let obj = try? JSONSerialization.jsonObject(with: head[..<nl]) as? [String: Any] else { return "codex" }
+        let payload = (obj["payload"] as? [String: Any]) ?? obj
+        if let cwd = payload["cwd"] as? String, !cwd.isEmpty { return projectLabel(cwd) }
+        return "codex"
     }
 
     // MARK: - Helpers

@@ -45,6 +45,7 @@ final class AppModel: ObservableObject {
 
     // Live monitoring (plan usage + per-session context)
     @Published var planUsage: PlanUsage?
+    @Published var planDiagnosis = ""       // why the last live fetch failed ("token-expired …", "http-429", "ok")
     @Published var liveSessions: [SessionCtx] = []
     @Published var ctxThreshold = 80
     @Published var liveEnabled = true
@@ -54,6 +55,7 @@ final class AppModel: ObservableObject {
     private var ctxState: [String: CtxState] = [:]
 
     let cachePath: String
+    let autoRefresh: Bool                   // false in snapshot/debug runs — view must not self-refresh
     private let cache: UsageCache?
     private var timer: Timer?
     private var liveTimer: Timer?
@@ -61,6 +63,7 @@ final class AppModel: ObservableObject {
     private var watcher: FileWatcher?
 
     init(autoCollect: Bool = true) {
+        autoRefresh = autoCollect
         let home = NSHomeDirectory()
         cachePath = home + "/Library/Application Support/AgentPulse/usage.db"
         cache = try? UsageCache(path: cachePath)
@@ -82,17 +85,28 @@ final class AppModel: ObservableObject {
         watcher?.start()
 
         // Safety-net polls in case FSEvents misses (and for the plan-usage cache).
-        // Added in `.common` mode so they keep firing while the menu-bar popover is
-        // OPEN — `.scheduledTimer` uses `.default` mode, which menu tracking pauses,
-        // freezing the UI the moment you open it to look at it.
-        func every(_ s: TimeInterval, _ body: @escaping () -> Void) -> Timer {
-            let t = Timer(timeInterval: s, repeats: true) { _ in body() }
+        // `.common` mode so they keep firing while the popover is open, and the body
+        // runs SYNCHRONOUSLY on the main run loop (no Task hop whose delivery can lag
+        // behind while the popover is up) — the timer already fires on main.
+        func every(_ s: TimeInterval, _ body: @escaping @MainActor () -> Void) -> Timer {
+            let t = Timer(timeInterval: s, repeats: true) { _ in
+                MainActor.assumeIsolated { body() }
+            }
             RunLoop.main.add(t, forMode: .common)
             return t
         }
-        timer = every(120) { [weak self] in Task { @MainActor in self?.collect() } }
-        liveTimer = every(25) { [weak self] in Task { @MainActor in self?.liveTick() } }
-        planTimer = every(60) { [weak self] in Task { @MainActor in self?.refreshPlanUsage() } }
+        timer = every(120) { [weak self] in self?.collect() }
+        liveTimer = every(8) { [weak self] in self?.liveTick() }
+        planTimer = every(60) { [weak self] in self?.refreshPlanUsage() }
+
+        // Every popover open = an implicit full refresh. The popover window becomes
+        // key when shown, and it is this app's only window.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.collect(); self?.liveTick(); self?.refreshPlanUsage(viaKeychain: true)
+            }
+        }
     }
 
     /// Refresh plan usage (hybrid):
@@ -118,7 +132,11 @@ final class AppModel: ObservableObject {
         if planUsage == nil { planUsage = cached }                 // show whatever we have now
         Task.detached(priority: .utility) {
             let live = await LiveUsage.fetchPlanUsage()
-            await MainActor.run { self.adoptPlan(live ?? cached) }
+            let diag = LiveUsage.lastFetchDiagnosis
+            await MainActor.run {
+                self.adoptPlan(live ?? cached)
+                self.planDiagnosis = diag   // tell the UI WHY live fetch failed, if it did
+            }
         }
     }
 
@@ -133,14 +151,14 @@ final class AppModel: ObservableObject {
     }
 
     func liveTick() {
-        let sessions = LiveUsage.activeSessions(withinMinutes: 3,
+        let sessions = LiveUsage.activeSessions(withinMinutes: 15,
                                                 defaultWindow: window1M ? 1_000_000 : 200_000)
         liveSessions = sessions
         guard liveEnabled else { return }
 
         let now = Date()
         var pending: [SessionCtx] = []
-        for s in sessions {
+        for s in sessions where s.hasContext {   // alerts only make sense with a known window (Claude)
             var st = ctxState[s.sessionId] ?? CtxState()
             if s.usedPercent >= Double(ctxThreshold) {
                 if st.armed && now.timeIntervalSince(st.lastNotified) > 600 {   // ≤1 alert / session / 10 min

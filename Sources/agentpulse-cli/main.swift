@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import AgentPulseCore
 
 // Headless collector + reporter — used to validate parsing against the raw logs
@@ -18,7 +19,10 @@ if args.contains("--fetchplan") {
     if let pu = await LiveUsage.fetchPlanUsage() {
         print("LIVE  5h=\(pu.fiveHourPercent.map(String.init) ?? "-")%  weekly=\(pu.weeklyPercent.map(String.init) ?? "-")%  sonnet=\(pu.sonnetWeeklyPercent.map(String.init) ?? "-")%  (updated \(pu.updatedAt))")
     } else {
-        print("LIVE  nil — no valid OAuth token (expired/none) or no subscription usage; UI falls back to cache.")
+        print("LIVE  nil — \(LiveUsage.lastFetchDiagnosis)")
+        let st = LiveUsage.lastKeychainStatus
+        let msg = (SecCopyErrorMessageString(st, nil) as String?) ?? "?"
+        print("      keychain OSStatus=\(st) (\(msg))")
     }
     exit(0)
 }
@@ -33,12 +37,18 @@ if args.contains("--live") {
     } else {
         print("=== Plan usage: no cache (OMC not present, or API-key session) ===")
     }
-    let sessions = LiveUsage.activeSessions(withinMinutes: 10)
-    print("\n=== Active Claude Code sessions (last 10 min): \(sessions.count) ===")
+    let sessions = LiveUsage.activeSessions()
+    print("\n=== Active sessions, all tools (last 15 min): \(sessions.count) ===")
     for s in sessions {
-        let pct = String(format: "%5.1f%%", s.usedPercent)
         let proj = s.project.count >= 20 ? s.project : s.project + String(repeating: " ", count: 20 - s.project.count)
-        print("  \(pct)  \(s.ctxTokens) / \(s.windowSize)  \(proj) \(s.model) \(s.shortId)")
+        let idle = s.isIdle ? " idle" : ""
+        if s.hasContext {
+            let pct = String(format: "%5.1f%%", s.usedPercent)
+            print("  [\(s.tool.display)] \(pct)  \(s.ctxTokens) / \(s.windowSize)  \(proj) \(s.model) \(s.shortId)\(idle)")
+        } else {
+            let ago = Int(Date().timeIntervalSince(s.mtime) / 60)
+            print("  [\(s.tool.display)] presence  \(proj) (활동 \(ago)분 전)\(idle)")
+        }
     }
     exit(0)
 }
