@@ -38,6 +38,13 @@ public final class UsageCache {
             offset INTEGER NOT NULL DEFAULT 0,
             last_rowid INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS tokens(
+            day TEXT PRIMARY KEY,
+            input INTEGER NOT NULL DEFAULT 0,
+            output INTEGER NOT NULL DEFAULT 0,
+            cache_read INTEGER NOT NULL DEFAULT 0,
+            cache_creation INTEGER NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
         """)
     }
@@ -87,6 +94,7 @@ public final class UsageCache {
     /// never advance an offset without having counted its events (no double-count
     /// on a mid-run crash, no lost events).
     public func applyBatch(events: [EventKey: Int],
+                           tokens: [String: DayTokens] = [:],
                            states: [(key: String, mtime: Double, offset: Int64, lastRowid: Int64)]) throws {
         try db.transaction {
             if !events.isEmpty {
@@ -100,6 +108,20 @@ public final class UsageCache {
                                 .text(k.day), .text(k.profile), .int(Int64(n))])
                     _ = st.step()
                     sqlite3_reset_stmt(st)
+                }
+            }
+            if !tokens.isEmpty {
+                let tk = try db.prepare("""
+                INSERT INTO tokens(day, input, output, cache_read, cache_creation) VALUES(?,?,?,?,?)
+                ON CONFLICT(day) DO UPDATE SET input = input + excluded.input, output = output + excluded.output,
+                    cache_read = cache_read + excluded.cache_read, cache_creation = cache_creation + excluded.cache_creation
+                """)
+                defer { tk.finalize() }
+                for (day, t) in tokens {
+                    tk.bindAll([.text(day), .int(Int64(t.input)), .int(Int64(t.output)),
+                                .int(Int64(t.cacheRead)), .int(Int64(t.cacheCreation))])
+                    _ = tk.step()
+                    sqlite3_reset_stmt(tk)
                 }
             }
             if !states.isEmpty {
@@ -189,6 +211,20 @@ public final class UsageCache {
         """, bind: bind) { r in
             guard let t = ToolKind(rawValue: r.text(1) ?? "") else { return }
             out.append(DayToolCount(day: r.text(0) ?? "", tool: t, count: Int(r.int(2))))
+        }
+        return out
+    }
+
+    /// Per-day token consumption (Claude) in the range, keyed by `yyyy-MM-dd`.
+    public func dailyTokens(start: String, end: String) -> [String: DayTokens] {
+        var out: [String: DayTokens] = [:]
+        try? db.query("""
+        SELECT day, input, output, cache_read, cache_creation
+        FROM tokens WHERE day BETWEEN ? AND ?
+        """, bind: [.text(start), .text(end)]) { r in
+            guard let day = r.text(0) else { return }
+            out[day] = DayTokens(input: Int(r.int(1)), output: Int(r.int(2)),
+                                 cacheRead: Int(r.int(3)), cacheCreation: Int(r.int(4)))
         }
         return out
     }

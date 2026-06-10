@@ -6,11 +6,18 @@ cd "$ROOT"
 
 swift build -c release --product AgentPulse
 
+# App icon (.icns), drawn parametrically by make_icon.swift
+ICONSET="$ROOT/build/AgentPulse.iconset"
+mkdir -p "$ICONSET"
+swift "$ROOT/scripts/make_icon.swift" "$ICONSET" >/dev/null
+iconutil -c icns "$ICONSET" -o "$ROOT/AppIcon.icns"
+
 APP="$ROOT/AgentPulse.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/AgentPulse" "$APP/Contents/MacOS/AgentPulse"
 cp "$ROOT/scripts/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc sign so macOS assigns a stable identity (needed for the login-item API).

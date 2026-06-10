@@ -12,6 +12,37 @@ let args = Set(CommandLine.arguments.dropFirst())
 
 func err(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
 
+// Verify the live plan-usage fetch (reads the OAuth token, calls oauth/usage).
+if args.contains("--fetchplan") {
+    err("Fetching live plan usage (may prompt once for Keychain access)…")
+    if let pu = await LiveUsage.fetchPlanUsage() {
+        print("LIVE  5h=\(pu.fiveHourPercent.map(String.init) ?? "-")%  weekly=\(pu.weeklyPercent.map(String.init) ?? "-")%  sonnet=\(pu.sonnetWeeklyPercent.map(String.init) ?? "-")%  (updated \(pu.updatedAt))")
+    } else {
+        print("LIVE  nil — no valid OAuth token (expired/none) or no subscription usage; UI falls back to cache.")
+    }
+    exit(0)
+}
+
+// Live-monitor verification: print plan usage + active session context.
+if args.contains("--live") {
+    if let pu = LiveUsage.planUsage() {
+        let fresh = pu.isFresh() ? "fresh" : "STALE"
+        print("=== Plan usage (\(pu.sourceFile), \(fresh), updated \(pu.updatedAt)) ===")
+        print("  5-hour: \(pu.fiveHourPercent.map(String.init) ?? "—")%   weekly: \(pu.weeklyPercent.map(String.init) ?? "—")%   sonnet weekly: \(pu.sonnetWeeklyPercent.map(String.init) ?? "—")%")
+        print("  resets: 5h=\(pu.fiveHourResetsAt.map { "\($0)" } ?? "—")  weekly=\(pu.weeklyResetsAt.map { "\($0)" } ?? "—")")
+    } else {
+        print("=== Plan usage: no cache (OMC not present, or API-key session) ===")
+    }
+    let sessions = LiveUsage.activeSessions(withinMinutes: 10)
+    print("\n=== Active Claude Code sessions (last 10 min): \(sessions.count) ===")
+    for s in sessions {
+        let pct = String(format: "%5.1f%%", s.usedPercent)
+        let proj = s.project.count >= 20 ? s.project : s.project + String(repeating: " ", count: 20 - s.project.count)
+        print("  \(pct)  \(s.ctxTokens) / \(s.windowSize)  \(proj) \(s.model) \(s.shortId)")
+    }
+    exit(0)
+}
+
 do {
     let cache = try UsageCache(path: cachePath)
 

@@ -51,6 +51,21 @@ enum ClaudeParser {
         }
         return out
     }
+
+    /// Token consumption for one transcript line, from `message.usage`. Only assistant
+    /// messages carry usage; returns nil for everything else (and for zero-token lines).
+    static func tokens(line: Data) -> (day: String, tokens: DayTokens)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let message = obj["message"] as? [String: Any],
+              let usage = message["usage"] as? [String: Any],
+              let day = TimeUtil.day(fromISO: obj["timestamp"] as? String)
+        else { return nil }
+        func n(_ k: String) -> Int { (usage[k] as? NSNumber)?.intValue ?? 0 }
+        let t = DayTokens(input: n("input_tokens"), output: n("output_tokens"),
+                          cacheRead: n("cache_read_input_tokens"),
+                          cacheCreation: n("cache_creation_input_tokens"))
+        return t.total > 0 ? (day, t) : nil
+    }
 }
 
 /// Codex rollout sessions: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.

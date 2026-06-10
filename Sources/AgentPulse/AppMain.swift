@@ -2,6 +2,28 @@ import SwiftUI
 import AppKit
 import AgentPulseCore
 
+/// The app icon (bars-on-squircle), loaded once from the bundled AppIcon.icns.
+/// Nil in unpackaged dev runs (raw `.build/...` binary) — callers fall back to
+/// an SF Symbol so the UI still renders during development/snapshots.
+enum AppAssets {
+    static let icon: NSImage? = {
+        guard let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns") else { return nil }
+        return NSImage(contentsOfFile: path)
+    }()
+
+    /// A copy redrawn at the menu-bar status-item size (keeps full color — not a template).
+    static func menuBarIcon(_ pt: CGFloat = 18) -> NSImage? {
+        guard let base = icon else { return nil }
+        let img = NSImage(size: NSSize(width: pt, height: pt))
+        img.lockFocus()
+        base.draw(in: NSRect(x: 0, y: 0, width: pt, height: pt),
+                  from: .zero, operation: .sourceOver, fraction: 1)
+        img.unlockFocus()
+        img.isTemplate = false
+        return img
+    }
+}
+
 @main
 struct AgentPulseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -10,9 +32,13 @@ struct AgentPulseApp: App {
     var body: some Scene {
         MenuBarExtra {
             RootView(model: model)
-                .frame(width: 780, height: 600)
+                .frame(width: 640, height: 500)
         } label: {
-            Image(systemName: "chart.bar.xaxis")
+            if let icon = AppAssets.menuBarIcon() {
+                Image(nsImage: icon)
+            } else {
+                Image(systemName: "chart.bar.xaxis")
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -43,12 +69,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.periodKind = .month
         if let raw = categoryRaw, let cat = UsageCategory(rawValue: raw) { model.category = cat }
         model.reload()
+        model.liveEnabled = false   // populate live data for the snapshot without firing alerts
+        model.liveTick()
+        model.planUsage = LiveUsage.planUsage()   // cache only — no network/Keychain in snapshots
+        if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_COLLECTING"] != nil { model.isCollecting = true }
+        if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_SESSIONS"] != nil {
+            let d = Date(timeIntervalSince1970: 0)
+            model.liveSessions = [
+                SessionCtx(sessionId: "fake01aaaa", project: "agentpulse", model: "claude-opus-4-8", ctxTokens: 820_000, windowSize: 1_000_000, mtime: d),
+                SessionCtx(sessionId: "fake02bbbb", project: "intranet", model: "claude-sonnet-4-6", ctxTokens: 130_000, windowSize: 200_000, mtime: d),
+                SessionCtx(sessionId: "fake03cccc", project: ".claude", model: "claude-opus-4-8", ctxTokens: 480_000, windowSize: 1_000_000, mtime: d),
+                SessionCtx(sessionId: "fake04dddd", project: "linkbrain", model: "claude-sonnet-4-6", ctxTokens: 62_000, windowSize: 200_000, mtime: d),
+                SessionCtx(sessionId: "fake05eeee", project: "auto-video", model: "claude-opus-4-8", ctxTokens: 910_000, windowSize: 1_000_000, mtime: d),
+                SessionCtx(sessionId: "fake06ffff", project: "leanax", model: "claude-sonnet-4-6", ctxTokens: 24_000, windowSize: 200_000, mtime: d),
+            ]
+        }
         return model
     }
 
     @MainActor
     private func renderAndExit(to path: String, categoryRaw: String?) {
-        let view = RootView(model: makeModel(categoryRaw)).frame(width: 780, height: 600)
+        let view = RootView(model: makeModel(categoryRaw)).frame(width: 640, height: 500)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
         if let img = renderer.nsImage,
@@ -66,8 +107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func snap(to path: String, categoryRaw: String?) {
         NSApp.setActivationPolicy(.regular)
-        let host = NSHostingView(rootView: RootView(model: makeModel(categoryRaw)).frame(width: 780, height: 600))
-        host.frame = NSRect(x: 0, y: 0, width: 780, height: 600)
+        let host = NSHostingView(rootView: RootView(model: makeModel(categoryRaw)).frame(width: 640, height: 500))
+        host.frame = NSRect(x: 0, y: 0, width: 640, height: 500)
         let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         win.contentView = host
         win.title = "AgentPulse"

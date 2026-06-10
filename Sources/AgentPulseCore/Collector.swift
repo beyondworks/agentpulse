@@ -20,8 +20,10 @@ public final class Collector {
     @discardableResult
     public func collectAll(log: ((String) -> Void)? = nil) -> Stats {
         var events: [EventKey: Int] = [:]
+        var tokens: [String: DayTokens] = [:]
         var states: [(key: String, mtime: Double, offset: Int64, lastRowid: Int64)] = []
         let emit: (UsageEvent) -> Void = { e in events[EventKey(e), default: 0] += 1 }
+        let emitTokens: (String, DayTokens) -> Void = { day, t in tokens[day, default: DayTokens()].add(t) }
 
         var stats = Stats()
         merge(&stats, collectJSONL(tool: .claudeCode, root: home + "/.claude/projects",
@@ -29,9 +31,12 @@ public final class Collector {
         merge(&stats, collectJSONL(tool: .codex, root: home + "/.codex/sessions",
                                    emit: emit, states: &states, log: log))
         merge(&stats, collectHermes(emit: emit, states: &states, log: log))
+        // Claude token consumption — tracked on its own `tok:` offsets so historical
+        // transcripts get backfilled once even though their event offsets are long past.
+        collectClaudeTokens(emit: emitTokens, states: &states, log: log)
 
         stats.events = events.values.reduce(0, +)
-        try? cache.applyBatch(events: events, states: states)
+        try? cache.applyBatch(events: events, tokens: tokens, states: states)
         try? cache.setMeta("last_collected", ISO8601DateFormatter().string(from: Date()))
         loadInstalled()
         return stats
@@ -97,6 +102,31 @@ public final class Collector {
         }
         log?("Hermes: \(stats.changed)/\(stats.files) persona DBs changed")
         return stats
+    }
+
+    // MARK: - Claude token consumption (separate offsets from event ingest)
+
+    private func collectClaudeTokens(emit: (String, DayTokens) -> Void,
+                                     states: inout [(key: String, mtime: Double, offset: Int64, lastRowid: Int64)],
+                                     log: ((String) -> Void)?) {
+        var changed = 0
+        for path in jsonlFiles(under: home + "/.claude/projects") {
+            guard let (mtime, size) = attrs(path) else { continue }
+            let key = "tok:" + path
+            let st = cache.ingestState(key)
+            if let st, st.mtime == mtime, st.offset == size { continue }   // unchanged
+            let chunk = JSONL.newLines(path: path, fromOffset: st?.offset ?? 0, fileSize: size)
+            if chunk.lines.isEmpty {
+                states.append((key, mtime, chunk.newOffset, 0))
+                continue
+            }
+            for line in chunk.lines {
+                if let t = ClaudeParser.tokens(line: line) { emit(t.day, t.tokens) }
+            }
+            states.append((key, mtime, chunk.newOffset, 0))
+            changed += 1
+        }
+        if changed > 0 { log?("Claude tokens: \(changed) files scanned") }
     }
 
     private func loadInstalled() {

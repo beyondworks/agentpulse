@@ -36,26 +36,112 @@ final class AppModel: ObservableObject {
     // Results
     @Published var topItems: [ItemCount] = []
     @Published var trend: [DayToolCount] = []
+    @Published var dayTokens: [String: DayTokens] = [:]   // Claude tokens per day (hover tooltip)
     @Published var totalsByTool: [ToolKind: Int] = [:]
     @Published var grandTotal = 0
     @Published var ranking: [RankRow] = []
 
     @Published var launchAtLogin = false
 
+    // Live monitoring (plan usage + per-session context)
+    @Published var planUsage: PlanUsage?
+    @Published var liveSessions: [SessionCtx] = []
+    @Published var ctxThreshold = 80
+    @Published var liveEnabled = true
+    @Published var window1M = true          // default context window when unknown (1M vs 200k)
+
+    private struct CtxState { var armed = true; var lastNotified = Date.distantPast }
+    private var ctxState: [String: CtxState] = [:]
+
     let cachePath: String
     private let cache: UsageCache?
     private var timer: Timer?
+    private var liveTimer: Timer?
+    private var planTimer: Timer?
+    private var watcher: FileWatcher?
 
     init(autoCollect: Bool = true) {
         let home = NSHomeDirectory()
         cachePath = home + "/Library/Application Support/AgentPulse/usage.db"
         cache = try? UsageCache(path: cachePath)
+        if let t = ProcessInfo.processInfo.environment["AGENTPULSE_CTX_THRESHOLD"], let n = Int(t) { ctxThreshold = n }
         refreshLoginState()
         reload()
         guard autoCollect else { return }
+        Notifier.shared.prepare()
         collect()   // refresh data on launch
-        timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
+        liveTick()
+        refreshPlanUsage()
+
+        // Real-time refresh: watch the source dirs and re-collect on any write.
+        watcher = FileWatcher(paths: [home + "/.claude/projects",
+                                      home + "/.codex/sessions",
+                                      home + "/.hermes/profiles"], latency: 1.5) { [weak self] in
+            Task { @MainActor in self?.collect(); self?.liveTick() }
+        }
+        watcher?.start()
+
+        // Safety-net polls in case FSEvents misses (and for the plan-usage cache).
+        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.collect() }
+        }
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.liveTick() }
+        }
+        planTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPlanUsage() }
+        }
+    }
+
+    /// Refresh plan usage + active-session context, and push per-session compaction
+    /// alerts. Cheap (reads a couple of cache files + transcript tails).
+    /// Live plan usage: fetch from the OAuth usage endpoint (read-only, no token
+    /// refresh) and fall back to the OMC cache when no valid token is available.
+    func refreshPlanUsage() {
+        if planUsage == nil { planUsage = LiveUsage.planUsage() }   // show cache immediately
+        Task.detached(priority: .utility) {
+            let live = await LiveUsage.fetchPlanUsage()
+            await MainActor.run {
+                if let live { self.planUsage = live }
+                else if self.planUsage == nil { self.planUsage = LiveUsage.planUsage() }
+            }
+        }
+    }
+
+    func liveTick() {
+        let sessions = LiveUsage.activeSessions(withinMinutes: 3,
+                                                defaultWindow: window1M ? 1_000_000 : 200_000)
+        liveSessions = sessions
+        guard liveEnabled else { return }
+
+        let now = Date()
+        var pending: [SessionCtx] = []
+        for s in sessions {
+            var st = ctxState[s.sessionId] ?? CtxState()
+            if s.usedPercent >= Double(ctxThreshold) {
+                if st.armed && now.timeIntervalSince(st.lastNotified) > 600 {   // ≤1 alert / session / 10 min
+                    pending.append(s); st.armed = false; st.lastNotified = now
+                }
+            } else if s.usedPercent < Double(ctxThreshold) - 10 {                // re-arm after compaction
+                st.armed = true
+            }
+            ctxState[s.sessionId] = st
+        }
+        // Forget sessions that are no longer active.
+        let active = Set(sessions.map { $0.sessionId })
+        ctxState = ctxState.filter { active.contains($0.key) }
+
+        guard !pending.isEmpty else { return }
+        if pending.count > 3 {                                                  // coalesce a burst
+            let list = pending.prefix(6).map { "\($0.project) \(Int($0.usedPercent))%" }.joined(separator: ", ")
+            Notifier.shared.fire(title: "AgentPulse — \(pending.count)개 세션 컨텍스트 \(ctxThreshold)%+",
+                                 body: "\(list) · /compact 권장", id: "ctx-summary")
+        } else {
+            for s in pending {
+                Notifier.shared.fire(title: "AgentPulse — 컨텍스트 \(Int(s.usedPercent))%",
+                                     body: "/compact 권장 · \(s.project) (\(s.model), \(s.shortId))",
+                                     id: "ctx-\(s.sessionId)")
+            }
         }
     }
 
@@ -72,6 +158,7 @@ final class AppModel: ObservableObject {
         let (s, e) = period.dayBounds()
         topItems = cache.topItems(start: s, end: e, tool: toolFilter, category: category, limit: 12)
         trend = cache.dailyTrend(start: s, end: e, tool: toolFilter, category: category)
+        dayTokens = cache.dailyTokens(start: s, end: e)
         totalsByTool = cache.totalsByTool(start: s, end: e, category: category)
         grandTotal = cache.grandTotal(start: s, end: e, category: category, tool: toolFilter)
         lastUpdated = cache.meta("last_collected").map(Self.pretty) ?? "—"
