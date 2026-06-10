@@ -79,6 +79,23 @@ public struct ItemCount: Sendable, Identifiable, Hashable {
     }
 }
 
+/// Per-day token consumption (Claude only — Codex/Hermes don't log per-message tokens).
+/// Used for the trend-chart hover tooltip.
+public struct DayTokens: Sendable, Hashable {
+    public var input: Int
+    public var output: Int
+    public var cacheRead: Int
+    public var cacheCreation: Int
+    public init(input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0) {
+        self.input = input; self.output = output; self.cacheRead = cacheRead; self.cacheCreation = cacheCreation
+    }
+    /// All tokens that flowed through the model that day (new + generated + cache I/O).
+    public var total: Int { input + output + cacheRead + cacheCreation }
+    public mutating func add(_ o: DayTokens) {
+        input += o.input; output += o.output; cacheRead += o.cacheRead; cacheCreation += o.cacheCreation
+    }
+}
+
 /// One (day, tool, count) point for the time-series chart.
 public struct DayToolCount: Sendable, Identifiable, Hashable {
     public var id: String { day + "|" + tool.rawValue }

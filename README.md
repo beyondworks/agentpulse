@@ -41,6 +41,23 @@ open AgentPulse.app          # 메뉴바 우측에 막대그래프 아이콘 등
 agentpulse-cli --report                                     # 수집 없이 캐시 리포트만
 ```
 
+## 라이브 모니터링 (v1.1)
+
+상단 라이브 섹션에서 실시간 상태를 본다.
+
+- **플랜 사용량** — Claude Max 구독의 `5시간 / 주간 / Sonnet 주간` 사용 %. 출처는 OMC HUD가
+  `api.anthropic.com/api/oauth/usage`를 받아 캐시한 `~/.claude/plugins/oh-my-claudecode/.usage-cache.json`
+  (AgentPulse는 이 파일만 읽음 — 자격증명·네트워크 접근 없음). 구독(OAuth) 세션에서만 의미가 있고,
+  API-key 세션에선 한도 개념이 없어 "오래됨/정보 없음"으로 정직하게 표기.
+- **컨텍스트 80% 압축 권고 푸시** — 작업중인 Claude Code 세션의 컨텍스트창 점유율을 추적해, 임계치
+  (기본 80%, 슬라이더 조절) 도달 시 **macOS 알림**(`/compact 권장`). 25초 주기 폴.
+  - 점유율 = 활성 트랜스크립트 마지막 `usage`의 `input+cache_read+cache_creation` ÷ 컨텍스트 창 크기.
+    창 크기(200k/1M)는 세션 statusLine 캐시(`~/.claude/hud/cache/stdin.<id>.json`)에서 가져온다.
+  - **세션별 독립**: 세션마다 상태(armed/disarmed)를 들고, used%는 각 세션 창 기준이라 병렬 작업도 정확.
+    알림 identifier = `ctx-<sessionId>`(중복 누적 대신 갱신). 압축으로 % 떨어지면 재무장, 세션당 재알림 10분 간격.
+  - **병렬 동시 도달**: 세션마다 프로젝트 라벨로 구분된 별도 알림. 한 번에 3개 초과면 요약 1건으로 합침.
+  - 알림은 UNUserNotificationCenter(번들 실행) → 권한 미허용/비번들 시 `osascript`로 자동 전환.
+
 ## 구조
 
 ```

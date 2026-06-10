@@ -43,6 +43,12 @@ public enum TimeUtil {
         dayFormatter.date(from: day)
     }
 
+    /// Parse an ISO-8601 timestamp (with or without fractional seconds) from an `Any` value.
+    public static func isoDate(_ v: Any?) -> Date? {
+        guard let s = v as? String, !s.isEmpty else { return nil }
+        return isoWithFraction.date(from: s) ?? isoPlain.date(from: s)
+    }
+
     public static func today() -> String { day(from: Date()) }
 
     /// Inclusive list of day strings between `start` and `end`.
