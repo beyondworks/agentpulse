@@ -228,7 +228,7 @@ struct RootView: View {
         if let pu = model.planUsage, pu.fiveHourPercent != nil || pu.weeklyPercent != nil {
             // Known numbers: live when fresh; kept visible (dimmed) with their age and
             // the REASON they're frozen when not — never a silently stuck value.
-            let expired = model.planDiagnosis.hasPrefix("token-expired")
+            let expired = !pu.isFresh() && model.planDiagnosis.hasPrefix("token-expired")
             HStack(spacing: 5) {
                 planCapsule("5h", pu.fiveHourPercent)
                 planCapsule("주간", pu.weeklyPercent)

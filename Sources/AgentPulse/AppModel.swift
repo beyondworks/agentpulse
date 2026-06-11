@@ -120,6 +120,7 @@ final class AppModel: ObservableObject {
         let cached = LiveUsage.planUsage()
         if let cached, cached.isFresh(maxAgeHours: 5.0 / 60.0) {   // ≤5 min old → OMC is live
             adoptPlan(cached)
+            planDiagnosis = "ok"   // fresh value ⇒ the token works; clear any stale "expired" flag
             return
         }
         // Cache is stale. Only read the Keychain + call the (rate-limited) endpoint at
