@@ -105,9 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.reload()
         model.liveEnabled = false   // populate live data for the snapshot without firing alerts
         model.liveTick()
-        model.planUsage = LiveUsage.planUsage()   // cache only — no network/Keychain in snapshots
         if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_COLLECTING"] != nil { model.isCollecting = true }
-        if env["AGENTPULSE_FAKE_PLANDIAG"] != nil { model.planDiagnosis = "token-expired (snapshot)" }
         if ProcessInfo.processInfo.environment["AGENTPULSE_FAKE_SESSIONS"] != nil {
             let d = Date(timeIntervalSince1970: 0)
             model.liveSessions = [
