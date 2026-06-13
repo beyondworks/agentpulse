@@ -142,7 +142,7 @@ struct RootView: View {
             Text(model.lastUpdated).font(.caption2).foregroundStyle(.tertiary)
             // Fixed-size refresh control: swaps arrow ⇄ spinner in place (opacity only),
             // so a collection starting/finishing never reflows the header — no window jitter.
-            Button { model.collect(); model.refreshPlanUsage(viaKeychain: true) } label: {
+            Button { model.collect() } label: {
                 ZStack {
                     Image(systemName: "arrow.clockwise").font(.caption)
                         .opacity(model.isCollecting ? 0 : 1)
@@ -155,20 +155,16 @@ struct RootView: View {
         }
     }
 
-    // MARK: Live (plan usage + active-session context) — single row
+    // MARK: Live (active-session context) — single row
 
     private var liveSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Text("플랜").font(.caption2).foregroundStyle(.secondary)
-                planUsageView
-                Spacer()
-                Toggle("압축알림", isOn: $model.liveEnabled)
-                    .toggleStyle(.switch).controlSize(.mini).font(.caption2).fixedSize()
-                Stepper("\(model.ctxThreshold)%", value: $model.ctxThreshold, in: 50...95, step: 5)
-                    .controlSize(.small).font(.caption2).fixedSize()
-            }
+        HStack(alignment: .top, spacing: 10) {
             sessionsFlow
+            Spacer(minLength: 8)
+            Toggle("압축알림", isOn: $model.liveEnabled)
+                .toggleStyle(.switch).controlSize(.mini).font(.caption2).fixedSize()
+            Stepper("\(model.ctxThreshold)%", value: $model.ctxThreshold, in: 50...95, step: 5)
+                .controlSize(.small).font(.caption2).fixedSize()
         }
     }
 
@@ -222,85 +218,6 @@ struct RootView: View {
         if p >= Double(model.ctxThreshold) { return .red }
         if p >= Double(model.ctxThreshold) - 15 { return .orange }
         return Color(red: 0.13, green: 0.65, blue: 0.40)
-    }
-
-    @ViewBuilder private var planUsageView: some View {
-        if let pu = model.planUsage, pu.fiveHourPercent != nil || pu.weeklyPercent != nil {
-            // Known numbers: live when fresh; kept visible (dimmed) with their age and
-            // the REASON they're frozen when not — never a silently stuck value.
-            let expired = !pu.isFresh() && model.planDiagnosis.hasPrefix("token-expired")
-            HStack(spacing: 5) {
-                planCapsule("5h", pu.fiveHourPercent)
-                planCapsule("주간", pu.weeklyPercent)
-                planCapsule("Son", pu.sonnetWeeklyPercent)
-                if let age = planAgeLabel(pu.updatedAt) {
-                    Text(age).font(.caption2).foregroundStyle(.tertiary)   // stale-value transparency
-                }
-                if expired { reloginButton }
-            }
-            .fixedSize()
-            .opacity(pu.isFresh() ? 1 : 0.6)
-            .help(expired
-                  ? "잔량 조회 토큰이 만료됐습니다(약 8시간 수명). 터미널에서 `claude /login` 후 위젯 새로고침(↻)을 누르면 다시 라이브로 갱신됩니다. 표시 중인 값은 마지막 성공값입니다."
-                  : "플랜 잔량 마지막 갱신: \(planAgeFull(pu.updatedAt)) (라이브 또는 OMC 캐시 · CC 상태줄과 동일 소스)")
-        } else if model.planUsage?.errorReason == "auth" || model.planDiagnosis.hasPrefix("token-expired") {
-            // The OAuth token is expired/invalid — one click opens the re-login.
-            reloginButton
-        } else {
-            // No usable credentials (desktop-app-only session, or OMC absent).
-            Text("데스크톱앱에서 확인").font(.caption2).foregroundStyle(.tertiary)
-                .help("Claude 데스크톱앱 구독의 잔량은 보안상 외부 앱이 읽을 수 없습니다. CLI(claude /login)로 로그인된 세션이 있으면 실시간 표시됩니다.")
-        }
-    }
-
-    /// Opens Terminal running `claude /login` — the only safe way to renew the
-    /// (8-hour) token. The widget never touches credentials itself; once the login
-    /// completes, the next refresh picks the new token up automatically.
-    private var reloginButton: some View {
-        Button {
-            let script = "tell application \"Terminal\"\nactivate\ndo script \"claude /login\"\nend tell"
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            p.arguments = ["-e", script]
-            try? p.run()
-        } label: {
-            Text("재로그인 필요 ↗").font(.caption2.weight(.medium)).foregroundStyle(.orange)
-        }
-        .buttonStyle(.plain)
-        .help("잔량 조회 토큰이 만료됐습니다(약 8시간 수명). 클릭하면 터미널에서 `claude /login`이 열립니다. 로그인 완료 후 위젯을 다시 열면 자동으로 라이브 갱신됩니다.")
-    }
-
-    /// Short "· N분 전" suffix shown only when the plan value is no longer essentially
-    /// live (≥5 min old), so a lagging cache doesn't look like a wrong "real-time" value.
-    private func planAgeLabel(_ d: Date) -> String? {
-        let mins = Int(Date().timeIntervalSince(d) / 60)
-        guard mins >= 5 else { return nil }
-        return mins < 60 ? "· \(mins)분 전" : "· \(mins / 60)시간 전"
-    }
-
-    private func planAgeFull(_ d: Date) -> String {
-        let mins = Int(Date().timeIntervalSince(d) / 60)
-        if mins < 1 { return "방금" }
-        if mins < 60 { return "\(mins)분 전" }
-        return "\(mins / 60)시간 \(mins % 60)분 전"
-    }
-
-    @ViewBuilder private func planCapsule(_ label: String, _ pct: Int?) -> some View {
-        if let p = pct {
-            HStack(spacing: 3) {
-                Text(label).font(.caption2).foregroundStyle(.secondary)
-                Text("\(p)%").font(.caption2.weight(.semibold)).foregroundStyle(severityColor(Double(p), warn: 75, alert: 90))
-            }
-            .lineLimit(1).fixedSize()
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
-        }
-    }
-
-    private func severityColor(_ v: Double, warn: Double, alert: Double) -> Color {
-        if v >= alert { return .red }
-        if v >= warn { return .orange }
-        return .primary
     }
 
     private func agoText(_ d: Date) -> String {

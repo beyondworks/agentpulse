@@ -44,8 +44,6 @@ final class AppModel: ObservableObject {
     @Published var launchAtLogin = false
 
     // Live monitoring (plan usage + per-session context)
-    @Published var planUsage: PlanUsage?
-    @Published var planDiagnosis = ""       // why the last live fetch failed ("token-expired …", "http-429", "ok")
     @Published var liveSessions: [SessionCtx] = []
     @Published var ctxThreshold = 80
     @Published var liveEnabled = true
@@ -59,7 +57,6 @@ final class AppModel: ObservableObject {
     private let cache: UsageCache?
     private var timer: Timer?
     private var liveTimer: Timer?
-    private var planTimer: Timer?
     private var watcher: FileWatcher?
 
     init(autoCollect: Bool = true) {
@@ -74,7 +71,6 @@ final class AppModel: ObservableObject {
         Notifier.shared.prepare()
         collect()   // refresh data on launch
         liveTick()
-        refreshPlanUsage(viaKeychain: true)   // one-time Keychain prompt + live value at launch
 
         // Real-time refresh: watch the source dirs and re-collect on any write.
         watcher = FileWatcher(paths: [home + "/.claude/projects",
@@ -97,57 +93,11 @@ final class AppModel: ObservableObject {
         }
         timer = every(120) { [weak self] in self?.collect() }
         liveTimer = every(8) { [weak self] in self?.liveTick() }
-        planTimer = every(60) { [weak self] in self?.refreshPlanUsage() }
 
-        // Every popover open = an implicit full refresh. The popover window becomes
-        // key when shown, and it is this app's only window.
+        // Every popover open = an implicit full refresh (popover window becomes key).
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
                                                object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                self?.collect(); self?.liveTick(); self?.refreshPlanUsage(viaKeychain: true)
-            }
-        }
-    }
-
-    /// Refresh plan usage (hybrid):
-    /// - OMC rewrites its cache every few seconds while a Claude Code session is
-    ///   live. If the cache is very recent, OMC is actively polling — reuse it and
-    ///   do NOT hit the (rate-limited) usage endpoint ourselves.
-    /// - Otherwise (cache stale/missing, e.g. after a standalone widget restart),
-    ///   do our own read-only fetch for a current value. Read-only: never refreshes
-    ///   or writes the token, so it can't affect any CLI/desktop login.
-    func refreshPlanUsage(viaKeychain: Bool = false) {
-        let cached = LiveUsage.planUsage()
-        if let cached, cached.isFresh(maxAgeHours: 5.0 / 60.0) {   // ≤5 min old → OMC is live
-            adoptPlan(cached)
-            planDiagnosis = "ok"   // fresh value ⇒ the token works; clear any stale "expired" flag
-            return
-        }
-        // Cache is stale. Only read the Keychain + call the (rate-limited) endpoint at
-        // explicit moments — app launch and the manual refresh button — so we never
-        // spam the macOS access prompt or the API. The 60s timer just reuses the cache.
-        guard viaKeychain else {
-            adoptPlan(cached)   // adopt only if newer — the timer never reverts a live value
-            return
-        }
-        if planUsage == nil { planUsage = cached }                 // show whatever we have now
-        Task.detached(priority: .utility) {
-            let live = await LiveUsage.fetchPlanUsage()
-            let diag = LiveUsage.lastFetchDiagnosis
-            await MainActor.run {
-                self.adoptPlan(live ?? cached)
-                self.planDiagnosis = diag   // tell the UI WHY live fetch failed, if it did
-            }
-        }
-    }
-
-    /// Adopt a plan value only if it is at least as fresh as the current one, so the
-    /// display only ever moves forward in time — never snaps back to an older snapshot
-    /// (the bug that made a fresh live % revert to the stale cache, looking hardcoded).
-    private func adoptPlan(_ candidate: PlanUsage?) {
-        guard let candidate else { return }
-        if candidate.updatedAt >= (planUsage?.updatedAt ?? .distantPast) {
-            planUsage = candidate
+            Task { @MainActor in self?.collect(); self?.liveTick() }
         }
     }
 
